@@ -23,46 +23,35 @@ import pandas as pd
 import numpy as np
 from numpy.typing import NDArray
 from itertools import groupby
+from .utils import convert_pf_to_numpy_arrays
 
 
-#class MeekSTV:
-#
-#    def __init__(
-#        self,
-#        profile: RankProfile,
-#        m: int = 1,
-#        transfer: str = "fractional",
-#        quota: str = "droop",
-#        simultaneous: bool = True,
-#        tiebreak: Optional[str] = None,
-#    ):
-#        self.__check_seats_and_candidates_and_transfer(profile, m, transfer)
-#        self.profile = profile
-#        self.m = m
-#        self.transfer = transfer
-#        self.quota = quota
-#
-#        self._ballot_length = profile.max_ranking_length
-#
-#        self.threshold = self._get_threshold(profile.total_ballot_wt)
-#        self.simultaneous = simultaneous
-#        self._winner_tiebreak = tiebreak
-#        self._loser_tiebreak = tiebreak if tiebreak is not None else "first_place"
-#
-#        self.candidates = list(profile.candidates)
-#
-#        self._ballot_matrix, self._wt_vec, self._fpv_vec = (
-#            self._convert_df_to_numpy_arrays(profile.df)
-#        )
-#        self._initial_fpv_vec = self._make_initial_fpv()
-#        self._fpv_by_round, self._play_by_play, self._tiebreak_record = self._run_STV(
-#            self._ballot_matrix,
-#            self._wt_vec.copy(),
-#            self._fpv_vec,
-#            m,
-#            len(self.candidates),
-#        )
-#        self.election_states = self._make_election_states()
+class MeekSTV:
+
+    def __init__(
+        self,
+        profile,
+        m: int = 1,
+        tiebreak: Optional[str] = None,
+    ):
+        self.profile = profile
+        self.m = m
+
+        #self._ballot_length = profile.max_ranking_length
+        #self._winner_tiebreak = tiebreak
+        #self._loser_tiebreak = tiebreak if tiebreak is not None else "first_place"
+
+        self.candidates = list(profile.candidates)
+
+        self._ballot_matrix, self._mult_vec, self._fpv_vec = convert_pf_to_numpy_arrays(profile)
+
+        self._core = MeekCore(
+            ballot_matrix=self._ballot_matrix,
+            mult_vec=self._mult_vec.copy(),
+            num_cands=len(self.candidates),
+            m=m)
+        
+        self._fpv_by_round, self._play_by_play, self._tiebreak_record = self._core._run_core()
 
 class MeekCore:
     def __init__(
@@ -202,7 +191,7 @@ class MeekCore:
             new_losers = []
         else:
             hopeful_tallies = tallies[hopeful]
-            new_loser = np.argmin(hopeful_tallies)
+            new_loser = int(hopeful[int(np.argmin(hopeful_tallies))])
             hopeful.remove(new_loser)
             round_type = "loser"
             new_losers = [new_loser]
@@ -277,56 +266,56 @@ class MeekCore:
     
 #buncha profiles:
 
-deg2_profile = PreferenceProfile(
-        ballots=(
-            Ballot(ranking=(frozenset({"A"}), frozenset({"B"}), frozenset({"C"})), weight=90),
-            Ballot(ranking=(frozenset({"B"}), frozenset({"A"}), frozenset({"C"})), weight=90),
-            Ballot(ranking=(frozenset({"A"}), frozenset({"C"})), weight=30),
-            Ballot(ranking=(frozenset({"B"}), frozenset({"C"})), weight=30),
-            Ballot(ranking=(frozenset({"C"}),), weight=61),
-            Ballot(ranking=(frozenset({"D"}),), weight=99),
-        ),
-        candidates=("A", "B", "C", "D"),
-    )
-
-many_exhaust_profile = PreferenceProfile(
-        ballots=(
-            Ballot(ranking=(frozenset({"A"}), frozenset({"C"})), weight=120),
-            Ballot(ranking=(frozenset({"B"}),), weight=102),
-            Ballot(ranking=(frozenset({"C"}),), weight=77),
-            Ballot(ranking=(frozenset({"D"}),), weight=60),
-            Ballot(ranking=(frozenset({"E"}),), weight=51),
-            Ballot(ranking=(frozenset({"F"}),), weight=40),
-        ),
-        candidates=("A", "B", "C", "D", "E", "F"),
-    )
-
-squeeze_profile = PreferenceProfile(
-        ballots=(
-            Ballot(ranking=(frozenset({"A"}), frozenset({"B"})), weight=60),
-            Ballot(ranking=(frozenset({"A"}),), weight=90),
-            Ballot(ranking=(frozenset({"B"}),), weight=63),
-            Ballot(ranking=(frozenset({"C"}),), weight=87),
-        ),
-        candidates=("A", "B", "C"),
-    )
-
-fractional_not_same_as_meek_profile = PreferenceProfile(
-        ballots=(
-            Ballot(ranking=(frozenset({"A"}), frozenset({"B"})), weight=70),
-            Ballot(ranking=(frozenset({"B"}),), weight=80),
-            Ballot(ranking=(frozenset({"C"}),), weight=85),
-            Ballot(ranking=(frozenset({"D"}), frozenset({"A"})), weight=35),
-            Ballot(ranking=(frozenset({"E"}), frozenset({"A"})), weight=30),
-        ),
-        candidates=("A", "B", "C", "D", "E"),
-    )
-
-election = MeekCore(ballot_matrix = ballot_matrix,
-                        mult_vec = mult_vec,
-                        num_cands = 6,
-                        m = 2,
-                        max_iterations = 50,)
-
-print(election._fpv_by_round)
-print(election._play_by_play)
+#deg2_profile = PreferenceProfile(
+#        ballots=(
+#            Ballot(ranking=(frozenset({"A"}), frozenset({"B"}), frozenset({"C"})), weight=90),
+#            Ballot(ranking=(frozenset({"B"}), frozenset({"A"}), frozenset({"C"})), weight=90),
+#            Ballot(ranking=(frozenset({"A"}), frozenset({"C"})), weight=30),
+#            Ballot(ranking=(frozenset({"B"}), frozenset({"C"})), weight=30),
+#            Ballot(ranking=(frozenset({"C"}),), weight=61),
+#            Ballot(ranking=(frozenset({"D"}),), weight=99),
+#        ),
+#        candidates=("A", "B", "C", "D"),
+#    )
+#
+#many_exhaust_profile = PreferenceProfile(
+#        ballots=(
+#            Ballot(ranking=(frozenset({"A"}), frozenset({"C"})), weight=120),
+#            Ballot(ranking=(frozenset({"B"}),), weight=102),
+#            Ballot(ranking=(frozenset({"C"}),), weight=77),
+#            Ballot(ranking=(frozenset({"D"}),), weight=60),
+#            Ballot(ranking=(frozenset({"E"}),), weight=51),
+#            Ballot(ranking=(frozenset({"F"}),), weight=40),
+#        ),
+#        candidates=("A", "B", "C", "D", "E", "F"),
+#    )
+#
+#squeeze_profile = PreferenceProfile(
+#        ballots=(
+#            Ballot(ranking=(frozenset({"A"}), frozenset({"B"})), weight=60),
+#            Ballot(ranking=(frozenset({"A"}),), weight=90),
+#            Ballot(ranking=(frozenset({"B"}),), weight=63),
+#            Ballot(ranking=(frozenset({"C"}),), weight=87),
+#        ),
+#        candidates=("A", "B", "C"),
+#    )
+#
+#fractional_not_same_as_meek_profile = PreferenceProfile(
+#        ballots=(
+#            Ballot(ranking=(frozenset({"A"}), frozenset({"B"})), weight=70),
+#            Ballot(ranking=(frozenset({"B"}),), weight=80),
+#            Ballot(ranking=(frozenset({"C"}),), weight=85),
+#            Ballot(ranking=(frozenset({"D"}), frozenset({"A"})), weight=35),
+#            Ballot(ranking=(frozenset({"E"}), frozenset({"A"})), weight=30),
+#        ),
+#        candidates=("A", "B", "C", "D", "E"),
+#    )
+#
+#election = MeekCore(ballot_matrix = ballot_matrix,
+#                        mult_vec = mult_vec,
+#                        num_cands = 6,
+#                        m = 2,
+#                        max_iterations = 50,)
+#
+#print(election._fpv_by_round)
+#print(election._play_by_play)
