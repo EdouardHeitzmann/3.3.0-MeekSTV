@@ -16,7 +16,7 @@
 #    score_dict_to_ranking,
 #)
 
-from .permutations import update_perm_idx_vectorized, WeightVectorCalculator
+from .permutations import update_perm_idx_vectorized, WeightVectorCalculator, idx_to_perm
 
 from typing import Optional, Callable, Union, List
 import pandas as pd
@@ -103,8 +103,21 @@ class MeekCore:
 
         self._wt_calculator = WeightVectorCalculator(self.m-1, self.m)
 
-        self._fpv_by_round, self._play_by_play, self._tiebreak_record = self._run_core()
-        #self.election_states = self._make_election_states()
+        self._fpv_by_round, self._winner_comb_by_round, self._play_by_play, self._tiebreak_record = self._run_core()
+
+    def get_winners(self, round):
+        winners = []
+        for play in self._play_by_play[:round]:
+            if play["round_type"] == "winner":
+                winners += play["new_winners_or_losers"]
+        return winners
+
+    def detailed_tally_per_deg(self, round = 0):
+        fpv_vec = self._fpv_by_round[round]
+        winner_combination_vec = self._winner_comb_by_round[round]
+        winners = self.get_winners(round)
+        deg = len(winners)
+        dict_of_all_deg = {}
 
     def update_helpers(self,
                    pos_vec = None,
@@ -212,6 +225,7 @@ class MeekCore:
     
     def _run_core(self):
         fpv_by_round = []
+        comb_vec_per_round = []
         play_by_play = []
         tiebreak_record = []
 
@@ -248,6 +262,7 @@ class MeekCore:
                 hopeful,
             )
             fpv_by_round.append(tallies.copy())
+            comb_vec_per_round.append(winner_combination_vec.copy())
             winners_or_losers = new_losers if round_type == "loser" else new_winners
             #tiebreak_record.append #TODO: tiebreaks
             play_by_play.append(
@@ -262,7 +277,7 @@ class MeekCore:
             )
             round_number += 1
 
-        return fpv_by_round, play_by_play, tiebreak_record
+        return fpv_by_round, comb_vec_per_round, play_by_play, tiebreak_record
     
 #buncha profiles:
 
