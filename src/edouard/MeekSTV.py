@@ -51,7 +51,15 @@ class MeekSTV:
             num_cands=len(self.candidates),
             m=m)
         
-        self._fpv_by_round, self._play_by_play, self._tiebreak_record = self._core._run_core()
+        self._fpv_by_round, self._helper_vecs_per_round, self._play_by_play, self._tiebreak_record = self._core._run_core()
+
+        self._winner_to_cand = self._helper_vecs_per_round[-1]["winner_to_cand"]
+
+    def detailed_tally_per_deg(self, round = 0):
+        return self._core.detailed_tally_per_deg(round)
+    
+    def get_elected(self) -> List:
+        return [self.candidates[i] for i in self._winner_to_cand]
 
 class MeekCore:
     def __init__(
@@ -103,7 +111,7 @@ class MeekCore:
 
         self._wt_calculator = WeightVectorCalculator(self.m-1, self.m)
 
-        self._fpv_by_round, self._winner_comb_by_round, self._play_by_play, self._tiebreak_record = self._run_core()
+        self._fpv_by_round, self._helper_vecs_per_round, self._play_by_play, self._tiebreak_record = self._run_core()
 
     def get_winners(self, round):
         winners = []
@@ -113,11 +121,24 @@ class MeekCore:
         return winners
 
     def detailed_tally_per_deg(self, round = 0):
-        fpv_vec = self._fpv_by_round[round]
-        winner_combination_vec = self._winner_comb_by_round[round]
-        winners = self.get_winners(round)
-        deg = len(winners)
-        dict_of_all_deg = {}
+        record = self._helper_vecs_per_round[round]
+        fpv_vec = record["fpv_vec"]
+        winner_combination_vec = record["winner_combination_vec"]
+        winners = record["winner_to_cand"]
+
+        unique_winner_combos = np.unique(winner_combination_vec).astype(int)
+        total_weight_dict = {}
+        exhausted_weight_dict = {}
+        for perm_idx in unique_winner_combos:
+            perm = idx_to_perm(perm_idx, self.m)
+            translated_perm = tuple([winners[i] for i in perm])
+
+            ballot_mask = winner_combination_vec == perm_idx
+            exhausted_mask = ballot_mask & (fpv_vec < 0)
+
+            total_weight_dict[translated_perm] = sum(self._mult_vec[ballot_mask])
+            exhausted_weight_dict[translated_perm] = sum(self._mult_vec[exhausted_mask])
+        return total_weight_dict, exhausted_weight_dict
 
     def update_helpers(self,
                    pos_vec = None,
@@ -127,6 +148,9 @@ class MeekCore:
                    winner_to_cand = [],
                    new_losers = []):
         num_ballots = self._ballot_matrix.shape[0]
+        cand_to_winner = np.zeros(self._num_cands, dtype=np.int8) -1
+        for idx, cand in enumerate(winner_to_cand):
+            cand_to_winner[cand] = idx
         if pos_vec is None:
             pos_vec = np.zeros(num_ballots, dtype=np.int8)
         #assert len(pos_vec) == num_ballots 
@@ -143,7 +167,7 @@ class MeekCore:
             fpv_vec[needs_update] = self._ballot_matrix[needs_update, pos_vec[needs_update]]
         for _ in range(len(winner_to_cand)):
             needs_update = np.isin(fpv_vec, winner_to_cand)
-            winner_comb_vec[needs_update] = update_perm_idx_vectorized(winner_comb_vec[needs_update], fpv_vec[needs_update], self.m)
+            winner_comb_vec[needs_update] = update_perm_idx_vectorized(winner_comb_vec[needs_update], cand_to_winner[fpv_vec[needs_update]], self.m)
             bool_ballot_matrix[needs_update, pos_vec[needs_update]] = False
             pos_vec[needs_update] = np.argmax(bool_ballot_matrix[needs_update,:], axis = 1)
             fpv_vec[needs_update] = self._ballot_matrix[needs_update, pos_vec[needs_update]]
@@ -161,17 +185,17 @@ class MeekCore:
 
             leftover_weight = wt_vec_for_this_permutation[-1]
             leftover_tally =np.bincount(fpv_vec[non_exhausted_mask], weights=self._mult_vec[non_exhausted_mask]*leftover_weight, minlength=self._num_cands)
+            leftover_tally = leftover_tally.astype(np.float64)
             leftover_tally[winner_to_cand] += weights_per_winner[:len(winner_to_cand)]
             overall_tallies += leftover_tally
         return overall_tallies
 
-    def calibrate_keep_factors(self, fpv_vec, winner_combination_vec, winner_to_cand):
-        L = len(winner_to_cand)
-        keep_factors = np.ones(L)
+    def calibrate_keep_factors(self, fpv_vec, winner_combination_vec, winner_to_cand, keep_factors):
         for iteration in range(self._max_iterations):
             tallies = self.tally_calculator_engine(fpv_vec, winner_combination_vec, keep_factors, winner_to_cand)
             quota = sum(tallies) / (self.m+1) + self.epsilon
             if np.any(tallies[winner_to_cand] < quota):
+                print(f"tallies: {tallies}, winner_combination_vec: {winner_combination_vec}, m: {self.m}")
                 raise ValueError(f"Tally for a winning candidate is below quota: {tallies[winner_to_cand]} < {quota}, keep factors: {keep_factors}")
             if np.all(tallies[winner_to_cand] - quota < self.tolerance):
                 break
@@ -185,21 +209,24 @@ class MeekCore:
                         winner_combination_vec,
                         bool_ballot_matrix,
                         winner_to_cand,
-                        hopeful):
+                        hopeful,
+                        keep_factors):
         #1) calibrate keep factors
         #2) record info and determine loser/winner(s)
         #3) update helpers
         tallies, keep_factors, iterations, current_quota = self.calibrate_keep_factors(
             fpv_vec, 
             winner_combination_vec,
-            winner_to_cand
+            winner_to_cand,
+            keep_factors=keep_factors
         )
         non_winner_tallies = np.copy(tallies)
         non_winner_tallies[winner_to_cand] = -1
         if np.any(non_winner_tallies > current_quota):
             new_winners = np.where(non_winner_tallies > current_quota)[0].tolist()
-            print("New winners:", new_winners)
+            #print(f"New winners: {new_winners} elected with tallies {tallies[new_winners]} above quota {current_quota}")
             winner_to_cand.extend(new_winners)
+            keep_factors = np.append(keep_factors, np.ones(len(new_winners), dtype=np.float64))
             round_type = "winner"
             new_losers = []
         else:
@@ -208,7 +235,7 @@ class MeekCore:
             hopeful.remove(new_loser)
             round_type = "loser"
             new_losers = [new_loser]
-            print("New loser:", new_loser)
+            #print("New loser:", new_loser)
             new_winners = []
         if len(winner_to_cand) < self.m:
             pos_vec, fpv_vec, winner_combination_vec, bool_ballot_matrix = self.update_helpers(
@@ -225,7 +252,7 @@ class MeekCore:
     
     def _run_core(self):
         fpv_by_round = []
-        comb_vec_per_round = []
+        helper_vecs_per_round = []
         play_by_play = []
         tiebreak_record = []
 
@@ -234,6 +261,7 @@ class MeekCore:
         winner_combination_vec = self._initial_winner_comb_vec.copy()
         bool_ballot_matrix = self._initial_bool_ballot_matrix.copy()
         winner_to_cand = self._initial_winner_to_cand.copy()
+        keep_factors = np.array([], dtype=np.float64)
 
         hopeful = np.arange(0, self._num_cands).tolist()
 
@@ -260,11 +288,20 @@ class MeekCore:
                 bool_ballot_matrix,
                 winner_to_cand,
                 hopeful,
+                keep_factors,
             )
             fpv_by_round.append(tallies.copy())
-            comb_vec_per_round.append(winner_combination_vec.copy())
             winners_or_losers = new_losers if round_type == "loser" else new_winners
             #tiebreak_record.append #TODO: tiebreaks
+            helper_vecs_per_round.append(
+                {
+                    #"pos_vec": pos_vec.copy(),
+                    "fpv_vec": fpv_vec.copy(),
+                    "winner_combination_vec": winner_combination_vec.copy(),
+                    #"bool_ballot_matrix": bool_ballot_matrix.copy(),
+                    "winner_to_cand": winner_to_cand.copy(),
+                }
+            )
             play_by_play.append(
                 {
                     "round_number": round_number,
@@ -277,8 +314,75 @@ class MeekCore:
             )
             round_number += 1
 
-        return fpv_by_round, comb_vec_per_round, play_by_play, tiebreak_record
+        return fpv_by_round, helper_vecs_per_round, play_by_play, tiebreak_record
     
+    def instant_keep_factors_deg1(self, winner_to_cand, tally_totals_by_degree, exhausted_tallies_by_degree):
+        N = sum(tally_totals_by_degree.values())
+        g = exhausted_tallies_by_degree[tuple([])]
+        T = tally_totals_by_degree[tuple([winner_to_cand[0]])]
+        t = exhausted_tallies_by_degree[tuple([winner_to_cand[0]])]
+
+        k = (N - g - t + (self.m + 1)*self.epsilon) / ((self.m+1)*T - t)
+
+        return [k]
+
+    def instant_keep_factors_deg2(self, winner_to_cand, tally_totals_by_degree, exhausted_tallies_by_degree):
+        if len(winner_to_cand) !=2:
+            raise ValueError(f"instant_keep_factors_deg2 called with {len(winner_to_cand)} winners.")
+        
+        N = sum(tally_totals_by_degree.values())
+        g = exhausted_tallies_by_degree[tuple([])]
+
+        T12 = tally_totals_by_degree[tuple(winner_to_cand)]
+        t12 = exhausted_tallies_by_degree[tuple(winner_to_cand)]
+
+        T21 = tally_totals_by_degree[tuple(reversed(winner_to_cand))]
+        t21 = exhausted_tallies_by_degree[tuple(reversed(winner_to_cand))]
+
+        T1 = tally_totals_by_degree[tuple([winner_to_cand[0]])] + T12
+        t1 = exhausted_tallies_by_degree[tuple([winner_to_cand[0]])]
+
+        T2 = tally_totals_by_degree[tuple([winner_to_cand[1]])] + T21
+        t2 = exhausted_tallies_by_degree[tuple([winner_to_cand[1]])]
+
+        print("N, g, T1, t1, T2, t2, T12, t12, T21, t21:", N, g, T1, t1, T2, t2, T12, t12, T21, t21)
+
+        A = (T2*t12 - T12*t2 + T2*t21 + T21*t12 + T21*t2 + T21*t21) - (self.m+1)*(T12*T21 + T2*T21)
+        B = -T1*t12 - (N - g)*T12- T1*t2 + T12*t2 - T2*t1 - T2*t12 - T1*t21 - T2*t21 + (N-g)*T21 - T21*t1 - 2*T21 * (t12+t2+t21)
+        B += (self.m +1)*(T1*T12 + T1*T2 + T12*T21 + T2*T21 - T12* self.epsilon + T21* self.epsilon)
+        C = -(T1+T21)*(N - g - t1 - t12 - t2 - t21 + (self.m + 1)*self.epsilon)
+
+        print(A,B,C)
+
+        discriminant = B**2 - 4*A*C
+        print("Discriminant:", discriminant)
+        if discriminant <0:
+            raise ValueError("Negative discriminant in instant keep factor calculation for degree 2.")
+        sqrt_disc = discriminant**0.5
+        k_pos = (-B + sqrt_disc) / (2*A)
+        k_neg = (-B - sqrt_disc) / (2*A)
+        print("k_pos, k_neg:", k_pos, k_neg)
+        if 0 <= k_pos <= 1:
+            k2 = k_pos
+        elif 0 <= k_neg <= 1:
+            k2 = k_neg
+        else:
+            raise ValueError("No valid keep factor in [0,1] found in instant keep factor calculation for degree 2.")
+        k1 = ((N - g - t1 - t12 - t2 - t21 + (self.m + 1)*self.epsilon) + (t2 + t12 +t21)*k2) / ((self.m+1)*(T1+(1-k2)*T21) - t1 -t21 -t12 +k2*(t21+t12))
+        return [k1, k2]
+
+    def instant_keep_factors_from_round(self, round):
+        tally_totals_by_degree, exhausted_tallies_by_degree = self.detailed_tally_per_deg(round)
+        record = self._helper_vecs_per_round[round]
+        winner_to_cand = record["winner_to_cand"]
+        deg = len(winner_to_cand)
+        if deg == 1:
+            return self.instant_keep_factors_deg1(winner_to_cand, tally_totals_by_degree, exhausted_tallies_by_degree)
+        elif deg == 2:
+            return self.instant_keep_factors_deg2(winner_to_cand, tally_totals_by_degree, exhausted_tallies_by_degree)
+        #else:
+        #    return self.instant_keep_factors_degN(winner_to_cand, tally_totals_by_degree, exhausted_tallies_by_degree)
+
 #buncha profiles:
 
 #deg2_profile = PreferenceProfile(
