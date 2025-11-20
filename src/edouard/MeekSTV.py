@@ -108,10 +108,11 @@ class MeekCore:
             new_losers=initial_losers,
         )
         self._initial_winner_to_cand = winner_to_cand
+        self._initial_losers = initial_losers
 
         self._wt_calculator = WeightVectorCalculator(self.m-1, self.m)
 
-        self._fpv_by_round, self._helper_vecs_per_round, self._play_by_play, self._tiebreak_record = self._run_core()
+        #self._fpv_by_round, self._helper_vecs_per_round, self._play_by_play, self._tiebreak_record = self._run_core()
 
     def get_winners(self, round):
         winners = []
@@ -121,6 +122,8 @@ class MeekCore:
         return winners
 
     def detailed_tally_per_deg(self, round = 0):
+        if not hasattr(self, "_helper_vecs_per_round"):
+            self._fpv_by_round, self._helper_vecs_per_round, self._play_by_play, self._tiebreak_record = self._run_core()
         record = self._helper_vecs_per_round[round]
         fpv_vec = record["fpv_vec"]
         winner_combination_vec = record["winner_combination_vec"]
@@ -194,13 +197,16 @@ class MeekCore:
         for iteration in range(self._max_iterations):
             tallies = self.tally_calculator_engine(fpv_vec, winner_combination_vec, keep_factors, winner_to_cand)
             quota = sum(tallies) / (self.m+1) + self.epsilon
-            if np.any(tallies[winner_to_cand] < quota):
-                print(f"tallies: {tallies}, winner_combination_vec: {winner_combination_vec}, m: {self.m}")
-                raise ValueError(f"Tally for a winning candidate is below quota: {tallies[winner_to_cand]} < {quota}, keep factors: {keep_factors}")
+            #if np.any(tallies[winner_to_cand] < quota):
+                #print(f"Warning! Initial tally of a winner below quota: {tallies[winner_to_cand]} < {quota}")
+                #print(f"tallies: {tallies}, winner_combination_vec: {winner_combination_vec}, m: {self.m}")
+                #raise ValueError(f"Tally for a winning candidate is below quota: {tallies[winner_to_cand]} < {quota}, keep factors: {keep_factors}")
             if np.all(tallies[winner_to_cand] - quota < self.tolerance):
                 break
             new_keep_factors = quota/tallies[winner_to_cand]
             keep_factors *= new_keep_factors
+        if np.any(keep_factors > 1.0):
+            print(f"Warning! Keep factors exceeded 1.0: {keep_factors}.")
         return tallies, keep_factors, iteration+1, quota
     
     def meek_stv_engine(self, 
@@ -249,6 +255,70 @@ class MeekCore:
         return (tallies, keep_factors, iterations, current_quota, 
                 pos_vec, fpv_vec, winner_combination_vec, 
                 bool_ballot_matrix, round_type, new_losers, new_winners, winner_to_cand, hopeful)
+
+    def _run_first_round(self):
+
+        pos_vec = self._initial_pos_vec.copy()
+        fpv_vec = self._initial_fpv_vec.copy()
+        winner_combination_vec = self._initial_winner_comb_vec.copy()
+        bool_ballot_matrix = self._initial_bool_ballot_matrix.copy()
+        winner_to_cand = self._initial_winner_to_cand.copy()
+        _, keep_factors, _, _ = self.calibrate_keep_factors(
+            fpv_vec=fpv_vec,
+            winner_combination_vec=winner_combination_vec,
+            winner_to_cand=winner_to_cand,
+            keep_factors = np.ones(len(winner_to_cand))
+        )
+        print(winner_to_cand, keep_factors)
+
+        hopeful = np.arange(0, self._num_cands).tolist()
+        hopeful = [cand for cand in hopeful if cand not in self._initial_losers]
+
+        tiebreak = None
+
+        (
+            tallies,
+            keep_factors,
+            iterations,
+            current_quota,
+            pos_vec,
+            fpv_vec,
+            winner_combination_vec,
+            bool_ballot_matrix,
+            round_type,
+            new_losers,
+            new_winners,
+            winner_to_cand,
+            hopeful,
+        ) = self.meek_stv_engine(
+            pos_vec,
+            fpv_vec,
+            winner_combination_vec,
+            bool_ballot_matrix,
+            winner_to_cand,
+            hopeful,
+            keep_factors,
+        )
+        winners_or_losers = new_losers if round_type == "loser" else new_winners
+        #tiebreak_record.append #TODO: tiebreaks
+        helper_vecs={
+                #"pos_vec": pos_vec.copy(),
+                "fpv_vec": fpv_vec.copy(),
+                "winner_combination_vec": winner_combination_vec.copy(),
+                #"bool_ballot_matrix": bool_ballot_matrix.copy(),
+                "winner_to_cand": winner_to_cand.copy(),
+            }
+        
+        play ={
+                "round_number": -1,
+                "new_winners_or_losers": winners_or_losers,
+                "keep_factors": keep_factors.copy(),
+                "quota": current_quota,
+                "iterations": iterations,
+                "round_type": round_type,
+            }
+
+        return tallies, helper_vecs, play, tiebreak
     
     def _run_core(self):
         fpv_by_round = []
@@ -261,7 +331,12 @@ class MeekCore:
         winner_combination_vec = self._initial_winner_comb_vec.copy()
         bool_ballot_matrix = self._initial_bool_ballot_matrix.copy()
         winner_to_cand = self._initial_winner_to_cand.copy()
-        keep_factors = np.array([], dtype=np.float64)
+        _, keep_factors, _, _ = self.calibrate_keep_factors(
+            fpv_vec=fpv_vec,
+            winner_combination_vec=winner_combination_vec,
+            winner_to_cand=winner_to_cand,
+            keep_factors = np.ones(len(winner_to_cand))
+        )
 
         hopeful = np.arange(0, self._num_cands).tolist()
 
